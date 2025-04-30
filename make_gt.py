@@ -11,47 +11,47 @@ from scipy.ndimage import gaussian_filter, median_filter, grey_erosion
 from skimage.filters import threshold_otsu, sobel
 import argparse
 
-lT = lineageTree.load("/Users/irmakavci/Desktop/STAGE IBDM/LineageTree_Hackathon.lT")
 
-def draw_sph_at_pos(pos_at_t: np.ndarray, shape: tuple[int, int, int], radius: int) -> np.ndarray:
+def draw_sph_at_pos(
+    pos_at_t: np.ndarray, shape: tuple[int, int, int], radius: int
+) -> np.ndarray:
     """
     Draw spheres at specified positions in a 3D segmentation array.
-    
-    Parameters:
 
-    pos_at_t (np.ndarray): Array of cell positions as (x, y, z) coordinates.
-    shape (tuple[int, int, int]): Shape of the segmentation image (x, y, z).
-    radius (int): Radius of the spheres to be drawn at each position.
-    
+    Parameters:
+        pos_at_t (np.ndarray): Array of cell positions as (x, y, z) coordinates.
+        shape (tuple[int, int, int]): Shape of the segmentation image (x, y, z).
+        radius (int): Radius of the spheres to be drawn at each position.
+
     Returns:
-    int
-        New segmentation array with spheres drawn at cell positions.
+        int:
+          New segmentation array with spheres drawn at cell positions.
     """
 
     padd_shape = (shape[0] + 2 * radius, shape[1] + 2 * radius, shape[2] + 2 * radius)
-    padd_seg = np.zeros(padd_shape, dtype=np.uint16)  
+    padd_seg = np.zeros(padd_shape, dtype=np.uint16)
 
-    sphere = ball(radius) 
-    mask = 0 < sphere # dtype=bool 
+    sphere = ball(radius)
+    mask = 0 < sphere  # dtype=bool
 
-    
     for i, pos in enumerate(pos_at_t, start=1):
-        x, y, z = np.round(pos[::-1]).astype(int)  
-        x, y, z = x + radius, y + radius, z + radius  
+        x, y, z = np.round(pos[::-1]).astype(int)
+        x, y, z = x + radius, y + radius, z + radius
 
         x_start, x_end = x - radius, x + radius + 1
         y_start, y_end = y - radius, y + radius + 1
         z_start, z_end = z - radius, z + radius + 1
 
         padd_seg[x_start:x_end, y_start:y_end, z_start:z_end][mask] = i
-    
+
     new_seg = padd_seg[radius:-radius, radius:-radius, radius:-radius]
 
     return new_seg
 
 
-def extract_corr_seg_cells(im_seg: np.ndarray,  
-                                    min_area=50, max_area=5000, threshold=0.8) -> np.ndarray:
+def extract_corr_seg_cells(
+    im_seg: np.ndarray, min_area=50, max_area=5000, threshold=0.8
+) -> np.ndarray:
     """
     Extracts correctly segmented cells based on manual positions.
 
@@ -67,13 +67,15 @@ def extract_corr_seg_cells(im_seg: np.ndarray,
     filter_seg = np.zeros(im_seg.shape, dtype=np.uint16)
 
     regions = {"coords": [], "labels": []}
- 
+
     for prop in regionprops(im_seg):
         mask = im_seg == prop.label
         if min_area <= prop.area <= max_area and prop.area > threshold:
-            filter_seg[mask] = prop.label #filter_seg[label == prop.label] = prop.label  
-            regions["coords"].append(prop.centroid)  
-            regions["labels"].append(prop.label)  
+            filter_seg[mask] = (
+                prop.label
+            )  # filter_seg[label == prop.label] = prop.label
+            regions["coords"].append(prop.centroid)
+            regions["labels"].append(prop.label)
 
     return filter_seg
 
@@ -87,10 +89,10 @@ def region_filter_lsa(im_seg: np.ndarray, pos_at_t: np.ndarray) -> np.ndarray:
 
     for prop in regionprops(im_seg):
 
-        regions["coords"].append(prop.centroid)  
-        regions["labels"].append(prop.label) 
+        regions["coords"].append(prop.centroid)
+        regions["labels"].append(prop.label)
 
-    cost = cdist(points, regions["coords"])  
+    cost = cdist(points, regions["coords"])
     row_ind, col_ind = linear_sum_assignment(cost)
     hits = np.array(regions["labels"])[col_ind]
 
@@ -98,16 +100,26 @@ def region_filter_lsa(im_seg: np.ndarray, pos_at_t: np.ndarray) -> np.ndarray:
 
     for im_seg_id in hits:
         corr_seg[im_seg == im_seg_id] = im_seg_id
-    
+
     return corr_seg
 
-def ws_adaptive_mask(im, pos_at_t: np.ndarray, r=7, sigma=1.5,
-                     min_th_vol=0, max_th_vol=10000,
-                     percent_of_th=70, increment=10,
-                     edge_thresh=0.008, intensity_floor=25,
-                     min_mask_intensity=100,
-                     use_mixed_threshold=True, mix_ratio=0.3,
-                     min_mask_floor_limit=0):
+
+def ws_adaptive_mask(
+    im,
+    pos_at_t: np.ndarray,
+    r=7,
+    sigma=1.5,
+    min_th_vol=0,
+    max_th_vol=10000,
+    percent_of_th=70,
+    increment=10,
+    edge_thresh=0.008,
+    intensity_floor=25,
+    min_mask_intensity=100,
+    use_mixed_threshold=True,
+    mix_ratio=0.3,
+    min_mask_floor_limit=0,
+):
     """
     Adaptive watershed segmentation using seed positions and image filtering.
 
@@ -178,13 +190,25 @@ def ws_adaptive_mask(im, pos_at_t: np.ndarray, r=7, sigma=1.5,
             if min_th_vol < volumes[s] < max_th_vol:
                 ws[new_ws == s] = s
         missed_seeds = set(all_seeds).difference(np.unique(ws))
-        print(f"Th {percent_of_th}% – min_intensity={current_min_intensity} – missing seeds: {len(missed_seeds)}")
+        print(
+            f"Th {percent_of_th}% – min_intensity={current_min_intensity} – missing seeds: {len(missed_seeds)}"
+        )
 
     return ws
 
-# optional 
- 
-def remove_irregular_labels_3d(im, ws, min_vol=500, max_vol=100000, max_ecc=0.99, min_solidity=0.7, min_mean_intensity=50):
+
+# optional
+
+
+def remove_irregular_labels_3d(
+    im,
+    ws,
+    min_vol=500,
+    max_vol=100000,
+    max_ecc=0.99,
+    min_solidity=0.7,
+    min_mean_intensity=50,
+):
     """
     Remove large or irregular segmented objects based on geometry and intensity.
 
@@ -208,24 +232,28 @@ def remove_irregular_labels_3d(im, ws, min_vol=500, max_vol=100000, max_ecc=0.99
 
     for region in props:
         label = region.label
-        region_mask = (ws == label)
+        region_mask = ws == label
 
-        mean_intensity = region.mean_intensity if region.intensity_image is not None else 0
+        mean_intensity = (
+            region.mean_intensity if region.intensity_image is not None else 0
+        )
 
         bigger = region.area > max_vol
         irregular = hasattr(region, "solidity") and region.solidity < min_solidity
 
         if (bigger or irregular) and mean_intensity < min_mean_intensity:
-            cleaned_ws[region_mask] = 0  
+            cleaned_ws[region_mask] = 0
 
     return cleaned_ws
 
+
 def main_function(
-        t: int,
-        method: str = ["watershed", "sphere", "segmentation"],
-        output_path: str = None,
-        input_path: str = None,
-        lineage_tree_path: str = None):
+    t: int,
+    method: str = ["watershed", "sphere", "segmentation"],
+    output_path: str = None,
+    input_path: str = None,
+    lineage_tree_path: str = None,
+):
     im = imread(input_path.format(t=t))
     lT = lineageTree.load(lineage_tree_path)
     pos_at_t = [lT.pos[c] for c in lT.nodes_at_t(t)]
@@ -233,25 +261,37 @@ def main_function(
     cleaned_ws = remove_irregular_labels_3d(im, ws)
 
     imwrite(output_path, cleaned_ws)
-    
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog= "Hybride watershed",
-                                     description= "Run a watershed algorithm to create a new ground truth image")
-    parser.add_argument("-t", "--time", type=int, help= "Time to process")
-    parser.add_argument("-m", "--method", type=str, choices= ["watershed", "sphere", "segmentation"], help= "Methods of creating a new ground truth image")
-    parser.add_argument("-o", "--output_path", type=str, help= "Output path for a new ground truth image")
-    parser.add_argument("--input_path", type=str, default= ("/Users/irmakavci/Desktop/STAGE IBDM/t{t:05}.tiff"), help= "Input path for pattern with t as time")
-    parser.add_argument("--lineage_tree_path", type=str, default= ("/Users/irmakavci/Desktop/STAGE IBDM/LineageTree_Hackathon.lT"), help= "Path to lineage tree file")
+    parser = argparse.ArgumentParser(
+        prog="Hybrid watershed",
+        description="Run a watershed algorithm to create a new ground truth image",
+    )
+    parser.add_argument("-t", "--time", type=int, help="Time to process")
+    parser.add_argument(
+        "-m",
+        "--method",
+        type=str,
+        choices=["watershed", "sphere", "segmentation"],
+        help="Methods of creating a new ground truth image",
+    )
+    parser.add_argument(
+        "-o", "--output-path", type=str, help="Output path for a new ground truth image"
+    )
+    parser.add_argument(
+        "-i", "--input-path", type=str, help="Input path for pattern with t as time"
+    )
+    parser.add_argument(
+        "-lt", "--lineage-tree-path", type=str, help="Path to lineage tree file"
+    )
 
     args = parser.parse_args()
 
 main_function(
-        t=args.time,
-        method=args.method,
-        output_path=args.output_path,
-        input_path=args.input_path,
-        lineage_tree_path=args.lineage_tree_path
-    )
-
-# python3 seg.py -t 200 -m watershed -o seg_200_ws.tiff
-
+    t=args.time,
+    method=args.method,
+    output_path=args.output_path,
+    input_path=args.input_path,
+    lineage_tree_path=args.lineage_tree_path,
+)
