@@ -6,7 +6,6 @@ from scipy.spatial.distance import cdist
 from skimage.measure import regionprops
 from skimage.segmentation import watershed
 from tifffile import imread, imwrite
-from scipy.ndimage import sum_labels
 from scipy.ndimage import gaussian_filter, median_filter, grey_erosion
 from skimage.filters import threshold_otsu, sobel
 import argparse
