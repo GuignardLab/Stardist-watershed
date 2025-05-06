@@ -17,6 +17,10 @@ def draw_sph_at_pos(
     """
     Draw spheres at specified positions in a 3D segmentation array.
 
+
+
+
+
     Parameters:
         pos_at_t (np.ndarray): Array of cell positions as (x, y, z) coordinates.
         shape (tuple[int, int, int]): Shape of the segmentation image (x, y, z).
