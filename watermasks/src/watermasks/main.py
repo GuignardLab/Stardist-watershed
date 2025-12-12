@@ -197,7 +197,7 @@ def ws_adaptive_mask(
 def ws_adaptive_mask_v2(
     im,
     pos_at_t: np.ndarray,
-    r=7,
+    ero_rad=7,
     sigma=1.5,
     min_th_vol=0,
     max_th_vol=10000,
@@ -244,8 +244,8 @@ def ws_adaptive_mask_v2(
     gradient = sobel(im_filtered)
     ignore_mask = (gradient < edge_thresh) & (im_filtered < intensity_floor)
 
-    erosions = {rad: grey_erosion(im_filtered, size=rad) for rad in [5, 7, 10, 15]}
-    im_for_ws = im_filtered - erosions[r]
+    erosion = grey_erosion(im_filtered, size=ero_rad)
+    im_for_ws = im_filtered - erosion
     im_for_ws_gs = gaussian_filter(im_for_ws, sigma=1)
 
     th_otsu = threshold_otsu(im_for_ws_gs)
