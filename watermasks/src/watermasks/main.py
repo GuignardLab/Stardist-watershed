@@ -1,4 +1,4 @@
-from LineageTree import lineageTree
+from lineagetree import LineageTree
 import numpy as np
 from skimage.morphology import ball
 from scipy.optimize import linear_sum_assignment
@@ -116,7 +116,7 @@ def ws_adaptive_mask(
     min_mask_intensity=100,
     use_mixed_threshold=True,
     mix_ratio=0.3,
-    min_mask_floor_limit=0,
+    min_mask_floor_limit=0
 ):
     """
     Adaptive watershed segmentation using seed positions and image filtering.
@@ -194,6 +194,97 @@ def ws_adaptive_mask(
 
     return ws
 
+def ws_adaptive_mask_v2(
+    im,
+    pos_at_t: np.ndarray,
+    r=7,
+    sigma=1.5,
+    min_th_vol=0,
+    max_th_vol=10000,
+    percent_of_th=70,
+    increment=10,
+    edge_thresh=0.001,
+    intensity_floor=200,
+    min_mask_intensity=100,
+    use_mixed_threshold=True,
+    mix_ratio=0.3,
+    min_mask_floor_limit=0
+):
+    """
+    Adaptive watershed segmentation using seed positions and image filtering.
+
+    Applies erosion, Gaussian filtering, and an adaptive threshold combining Otsu and intensity mean.
+    Iteratively adjusts the mask to recover missed seeds while ignoring low-gradient or low-intensity regions.
+
+    Parameters:
+        im (np.ndarray): Input image.
+        pos_at_t (np.ndarray): Seed positions (Y, X).
+        r (int): Erosion radius.
+        sigma (float): Gaussian blur sigma.
+        min_th_vol (int): Minimum allowed object volume.
+        max_th_vol (int): Maximum allowed object volume.
+        percent_of_th (int): Starting threshold percentage.
+        increment (int): Decrease step for threshold.
+        edge_thresh (float): Gradient threshold for ignoring background.
+        intensity_floor (float): Minimum intensity for inclusion.
+        min_mask_intensity (float): Minimum mask intensity.
+        use_mixed_threshold (bool): Whether to mix Otsu and mean thresholds.
+        mix_ratio (float): Weight for mixing threshold methods.
+        min_mask_floor_limit (float): Lower bound for intensity thresholding.
+
+    Returns:
+        np.ndarray: Labeled segmentation mask.
+    """
+
+    pos_array = np.array([p[::-1] for p in pos_at_t]).round().astype(np.uint16)
+
+    im_filtered = gaussian_filter(im, sigma=sigma)
+    im_filtered = median_filter(im_filtered, size=3)
+
+    gradient = sobel(im_filtered)
+    ignore_mask = (gradient < edge_thresh) & (im_filtered < intensity_floor)
+
+    erosions = {rad: grey_erosion(im_filtered, size=rad) for rad in [5, 7, 10, 15]}
+    im_for_ws = im_filtered - erosions[r]
+    im_for_ws_gs = gaussian_filter(im_for_ws, sigma=1)
+
+    th_otsu = threshold_otsu(im_for_ws_gs)
+    th = (1 - mix_ratio) * th_otsu + mix_ratio * np.mean(im_for_ws_gs)
+
+    seeds = np.zeros_like(im)
+    seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1)
+
+    def get_mask(pct, min_intensity):
+        thresh_val = max(th * (pct / 100), min_intensity)
+        return (im_for_ws_gs > thresh_val) & (~ignore_mask)
+
+    current_min_intensity = min_mask_intensity
+    mask = get_mask(percent_of_th, current_min_intensity)
+    ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
+
+    all_seeds = np.unique(seeds)
+    missed_seeds = set(all_seeds).difference(np.unique(ws))
+    ones_ws = np.ones_like(ws)
+
+    def sum_labels(arr, lbls, label_vals):
+        return [np.sum(arr[lbls == v]) for v in label_vals]
+
+    while missed_seeds and percent_of_th > 0:
+        percent_of_th -= increment
+        current_min_intensity = max(current_min_intensity - 5, min_mask_floor_limit)
+        mask = get_mask(percent_of_th, current_min_intensity)
+        new_ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
+        label_list = np.arange(1, new_ws.max() + 1)
+        volumes = dict(zip(label_list, sum_labels(ones_ws, new_ws, label_list)))
+        for s in missed_seeds.intersection(label_list):
+            if min_th_vol < volumes[s] < max_th_vol:
+                ws[new_ws == s] = s
+        missed_seeds = set(all_seeds).difference(np.unique(ws))
+        print(
+            f"Th {percent_of_th}% – min_intensity={current_min_intensity} – missing seeds: {len(missed_seeds)}"
+        )
+
+    return [ws, im_for_ws_gs]
 
 # optional
 
@@ -253,7 +344,7 @@ def main_function(
     lineage_tree_path: str = None,
 ):
     im = imread(input_path.format(t=t))
-    lT = lineageTree.load(lineage_tree_path)
+    lT = LineageTree.load(lineage_tree_path, file_type="mastodon") #<--- have changed that
     pos_at_t = [lT.pos[c] for c in lT.nodes_at_t(t)]
     ws = ws_adaptive_mask(im, pos_at_t)
     cleaned_ws = remove_irregular_labels_3d(im, ws)
@@ -286,10 +377,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-main_function(
-    t=args.time,
-    method=args.method,
-    output_path=args.output_path,
-    input_path=args.input_path,
-    lineage_tree_path=args.lineage_tree_path,
-)
+    main_function(
+        t=args.time,
+        method=args.method,
+        output_path=args.output_path,
+        input_path=args.input_path,
+        lineage_tree_path=args.lineage_tree_path,
+    )
