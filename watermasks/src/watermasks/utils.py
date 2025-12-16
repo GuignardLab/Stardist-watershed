@@ -4,6 +4,8 @@ from pathlib import Path
 from ipywidgets import IntSlider, interactive, Layout, Button, ToggleButton, Checkbox, HBox, VBox
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from time import perf_counter
+from contextlib import contextmanager
 
 
 def import_registration_mats_one_view(path_to_xml:str, starting_tp : int, final_tp : int, view : str ):
@@ -169,8 +171,8 @@ def paint_annotations(
         xi, yi, zi = registered_position_of_id_in_t(mastodon_id_t, lT, t_, R_of_t, view_, scaling_)
 
         # MAKE SURE POSITIONS ARE WITHING BOUNDS
-        z0 = max(zi - 4, 0)
-        z1 = min(zi + 4, an_space.shape[0])
+        z0 = max(zi - s_an, 0)
+        z1 = min(zi + s_an, an_space.shape[0])
 
         y0 = max(yi - s_an, 0)
         y1 = min(yi + s_an + 1, an_space.shape[1])
@@ -385,3 +387,10 @@ def view_overlays_3d_V2(volumes, im_names, cmaps , alphas:None=None, same_contra
     # RETURN COMPOSITE WIDGET
     # ----------------------------
     return VBox([HBox(checkboxes), interactive(update, z=slider)])
+
+@contextmanager
+def block_timer():
+    start = perf_counter()
+    yield
+    end = perf_counter()
+    print(f"-(Time elapsed: {end - start:.6f} s)\n")
