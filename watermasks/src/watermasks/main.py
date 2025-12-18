@@ -46,6 +46,35 @@ def draw_sph_at_pos(
 
     return new_seg
 
+def percentile_intensities_sampler(
+    image:np.ndarray,
+    intensity_thresh_range=list[int][10,500],
+    percentages:list[int]=[99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10],
+    print_thresholds:bool=False
+) -> dict:
+    """_summary_
+
+    Args:
+        image (np.ndarray): _description_
+        intensity_thresh_range (_type_, optional): _description_. Defaults to list[int][10,500].
+        percentages (list[int], optional): _description_. Defaults to [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10].
+        print_thresholds (bool, optional): _description_. Defaults to False.
+
+    Returns:
+        dict: _description_
+    """    
+
+    thresholds = {}
+    flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a flattened 1-D array
+
+    thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages}
+
+    if print_thresholds == False:
+        for first, second in thresholds.items():
+            print(f'{first}%      ---->      {second}')  
+    
+    return thresholds
+
 
 def extract_corr_seg_cells(
     im_seg: np.ndarray, min_area=50, max_area=5000, threshold=0.8
