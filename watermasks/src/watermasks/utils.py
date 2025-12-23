@@ -7,6 +7,16 @@ from matplotlib import colors
 from time import perf_counter
 from contextlib import contextmanager
 
+def paths(dataset_name:str):
+    """Imports paths from a .txt file in the parent directory of the project.
+
+    Returns:
+        list: A list with the directories for all nessesary files of the dataset. One must open the .txt to see what is the sequence of directories. 
+    """    
+    parent = Path.cwd().parent
+    paths_file = parent / f"{dataset_name}_paths.txt"
+    return paths_file.read_text().splitlines()
+
 
 def import_registration_mats_one_view(path_to_xml:str, starting_tp : int, final_tp : int, view : str ):
     """Given an xml file with registartion matrices, it outputs a dictionary with the list of the corresponding transformations (in sequence) as values.
@@ -105,25 +115,17 @@ def import_registration_mats_multiview(path_to_xml:str, starting_tp:int, final_t
                         mat[i][j] = float(elements[i*4+j])
                 matrices[starting_tp + dt][view].append(mat)
 
-    print('transformations extracted for all views from xml')
     return matrices
 
-def paths():
-    """imports paths from a file in the parent directory
-
-    Returns:
-        _type_: list
-    """    
-    parent = Path.cwd().parent
-    paths_file = parent / "paths.txt"
-    return paths_file.read_text().splitlines()
-
-def registered_position_of_id_in_t(mastodon_id:int, lT, t_:int, R_of_t:dict, view:str, scaling_:np.ndarray):
-    mats_t = R_of_t[t_][view]
+def registered_position_of_id_in_t(mastodon_id:int, lT, t_:int, R_of_t:dict, view:str, scaling_:np.ndarray, Transformations_In_Reverse:bool=True):
+    if Transformations_In_Reverse ==True:
+        mats_t = R_of_t[t_][view][::-1]
+    elif Transformations_In_Reverse == False:
+        mats_t = R_of_t[t_][view][:]
 
     x, y, z = lT.pos[mastodon_id][0:3]
 
-    for mat in mats_t[::-1]:
+    for mat in mats_t:
         
         mat = np.asarray(mat)
         rotation = mat[:,0:3]
@@ -141,10 +143,11 @@ def paint_annotations(
     t_:int,
     lT,
     shape_,
-    R_of_t,
+    R_of_t:dict,
     scaling_,
-    view_='0',
-    s_an=2 
+    view_:str='0',
+    s_an:int=2,
+    Transformations_In_Reverse:bool=True
 ) -> np.ndarray : 
     """
     A funtion that creates an image representation of your registered point annoations in the frame of reference of the input image. point annotations are represented as cubes.
@@ -161,14 +164,14 @@ def paint_annotations(
     Returns:
         np.ndarray: _description_
     """    
-    mats_t = R_of_t[t_][view_][:]
+    
     an_space = np.zeros(shape_)
     #make an empty image
 
     # PAINT ANNOTATIONS
     for mastodon_id_t in lT.time_nodes[t_]:
 
-        xi, yi, zi = registered_position_of_id_in_t(mastodon_id_t, lT, t_, R_of_t, view_, scaling_)
+        xi, yi, zi = registered_position_of_id_in_t(mastodon_id_t, lT, t_, R_of_t, view_, scaling_, Transformations_In_Reverse)
 
         # MAKE SURE POSITIONS ARE WITHING BOUNDS
         z0 = max(zi - s_an, 0)
@@ -393,4 +396,4 @@ def block_timer():
     start = perf_counter()
     yield
     end = perf_counter()
-    print(f"-(Time elapsed: {end - start:.6f} s)\n")
+    print(f"-(Time elapsed: {end - start:.6f} s)")

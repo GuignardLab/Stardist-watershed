@@ -48,30 +48,36 @@ def draw_sph_at_pos(
 
 def percentile_intensities_sampler(
     image:np.ndarray,
-    intensity_thresh_range=list[int][10,500],
+    intensity_thresh_range:list[int]=[10,500], # good for single view, non-deconvolved
     percentages:list[int]=[99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10],
     print_thresholds:bool=False
 ) -> dict:
-    """_summary_
+    """ Output intensity values for sampling for the adaptive watershed mask. 
 
     Args:
-        image (np.ndarray): _description_
-        intensity_thresh_range (_type_, optional): _description_. Defaults to list[int][10,500].
-        percentages (list[int], optional): _description_. Defaults to [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10].
-        print_thresholds (bool, optional): _description_. Defaults to False.
+        image (np.ndarray): The imput image
+        intensity_thresh_range (list[int], optional): Values for initial filtering. Defaults to list[int][10,500] (probabbly good for no Deconvolved dataset).
+        percentages (list[int], optional): the intensity percentiles to sample. Defaults to [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10].
+        print_thresholds (bool, optional): Set to true if you want the percentage and percentile value pairs printed. Defaults to False.
 
     Returns:
-        dict: _description_
+        dict: a dictionary with percentages as keys and percentile intensities values: e.g. {99.99: 523}
     """    
 
     thresholds = {}
     flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a flattened 1-D array
 
-    thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages}
+    thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages} 
+    # this makes the dictionary
 
-    if print_thresholds == False:
+    if print_thresholds == True:
+        from beautifultable import BeautifulTable
+        table = BeautifulTable()
+        table.columns.header = ['Percentage', 'Percentile Intensity']
         for first, second in thresholds.items():
-            print(f'{first}%      ---->      {second}')  
+             table.rows.append([f'{first} %', second])
+        table.set_style(BeautifulTable.STYLE_SEPARATED)
+        print(table)
     
     return thresholds
 
@@ -132,7 +138,7 @@ def region_filter_lsa(im_seg: np.ndarray, pos_at_t: np.ndarray) -> np.ndarray:
 
 
 def ws_adaptive_mask(
-    im,
+    im_for_ws,
     pos_at_t: np.ndarray,
     r=7,
     sigma=1.5,
@@ -154,7 +160,7 @@ def ws_adaptive_mask(
     Iteratively adjusts the mask to recover missed seeds while ignoring low-gradient or low-intensity regions.
 
     Parameters:
-        im (np.ndarray): Input image.
+        im_for_ws (np.ndarray): The (processed) image, inputed in watershed.
         pos_at_t (np.ndarray): Seed positions (Y, X).
         r (int): Erosion radius.
         sigma (float): Gaussian blur sigma.
@@ -173,53 +179,38 @@ def ws_adaptive_mask(
         np.ndarray: Labeled segmentation mask.
     """
 
+    # USE ANNOTATION POSITION AS WS SEEDS
     pos_array = np.array([p[::-1] for p in pos_at_t]).round().astype(np.uint16)
-
-    im_filtered = gaussian_filter(im, sigma=sigma)
-    im_filtered = median_filter(im_filtered, size=3)
-
-    gradient = sobel(im_filtered)
-    ignore_mask = (gradient < edge_thresh) & (im_filtered < intensity_floor)
-
-    erosions = {rad: grey_erosion(im_filtered, size=rad) for rad in [5, 7, 10, 15]}
-    im_for_ws = im_filtered - erosions[r]
-    im_for_ws_gs = gaussian_filter(im_for_ws, sigma=1)
-
-    th_otsu = threshold_otsu(im_for_ws_gs)
-    th = (1 - mix_ratio) * th_otsu + mix_ratio * np.mean(im_for_ws_gs)
-
     seeds = np.zeros_like(im)
     seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1)
+    all_seeds = set(np.unique(seeds) - {0}) # don't include the background
 
-    def get_mask(pct, min_intensity):
-        thresh_val = max(th * (pct / 100), min_intensity)
-        return (im_for_ws_gs > thresh_val) & (~ignore_mask)
+    # MASK (TO BE UPDATED)
+    def get_mask(thresh_val): # simpler mask generation, no ingore mask needed
+        return (im_for_ws > thresh_val)
 
-    current_min_intensity = min_mask_intensity
-    mask = get_mask(percent_of_th, current_min_intensity)
-    ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
+    #INITIALIZE VARIABLES
+    ws = np.zeros_like(im_for_ws)
 
-    all_seeds = np.unique(seeds)
     missed_seeds = set(all_seeds).difference(np.unique(ws))
     ones_ws = np.ones_like(ws)
+    intensities = percentile_intensities_sampler(im_for_ws,intensity_thresh_range=[min_int, max_int]) # calculates the list of thresholds
+    intensities[100]=max_int # for first iteration
 
-    def sum_labels(arr, lbls, label_vals):
-        return [np.sum(arr[lbls == v]) for v in label_vals]
 
-    while missed_seeds and percent_of_th > 0:
-        percent_of_th -= increment
-        current_min_intensity = max(current_min_intensity - 5, min_mask_floor_limit)
-        mask = get_mask(percent_of_th, current_min_intensity)
+    for pct, current_threshold in tqdm(sorted(intensities.items())[::-1],
+        desc="Processing thresholds for watershed:",
+        unit="step"):
+
+        if not missed_seeds: # break if previous step left no missing seeds
+            break
+        mask = get_mask(current_threshold)
         new_ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
-        label_list = np.arange(1, new_ws.max() + 1)
-        volumes = dict(zip(label_list, sum_labels(ones_ws, new_ws, label_list)))
-        for s in missed_seeds.intersection(label_list):
-            if min_th_vol < volumes[s] < max_th_vol:
-                ws[new_ws == s] = s
+        labels, volumes = np.unique_counts(new_ws) # labels are consistent!
+        vols = dict(zip(labels, volumes))
+        for s in missed_seeds.intersection(vols.keys()):
+            if s != 0 and min_vol < vols[s] < max_vol: # exclude background
         missed_seeds = set(all_seeds).difference(np.unique(ws))
-        print(
-            f"Th {percent_of_th}% – min_intensity={current_min_intensity} – missing seeds: {len(missed_seeds)}"
-        )
 
     return ws
 
