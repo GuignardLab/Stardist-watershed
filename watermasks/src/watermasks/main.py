@@ -9,6 +9,7 @@ from tifffile import imread, imwrite
 from scipy.ndimage import gaussian_filter, median_filter, grey_erosion
 from skimage.filters import threshold_otsu, sobel
 import argparse
+from tqdm import tqdm
 
 
 def draw_sph_at_pos(
@@ -52,7 +53,7 @@ def percentile_intensities_sampler(
     percentages:list[int]=[99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10],
     print_thresholds:bool=False
 ) -> dict:
-    """ Output intensity values for sampling for the adaptive watershed mask. 
+    """ Outputs intensity values for thresholds using percentiles of intensity (to be used in the adaptive watershed mask). 
 
     Args:
         image (np.ndarray): The imput image
@@ -65,7 +66,7 @@ def percentile_intensities_sampler(
     """    
 
     thresholds = {}
-    flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a flattened 1-D array
+    flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a butchered flattened 1-D array
 
     thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages} 
     # this makes the dictionary
@@ -137,53 +138,48 @@ def region_filter_lsa(im_seg: np.ndarray, pos_at_t: np.ndarray) -> np.ndarray:
     return corr_seg
 
 
-def ws_adaptive_mask(
-    im_for_ws,
-    pos_at_t: np.ndarray,
-    r=7,
-    sigma=1.5,
-    min_th_vol=0,
-    max_th_vol=10000,
-    percent_of_th=70,
-    increment=10,
-    edge_thresh=0.008,
-    intensity_floor=25,
-    min_mask_intensity=100,
-    use_mixed_threshold=True,
-    mix_ratio=0.3,
-    min_mask_floor_limit=0
+def preprocess_im(
+    im,
+    gauss_sigma=1,
+    median_size=1,
+    erosion_radius=7
 ):
-    """
-    Adaptive watershed segmentation using seed positions and image filtering.
+    im_gauss = gaussian_filter(im, sigma=gauss_sigma)
+    im_gauss_median = median_filter(im_gauss, size=median_size) # this seems that is not doing much! (inspection by eye)
+    erosion = grey_erosion(im_gauss_median, size=erosion_radius)
+    im_for_ws = im_gauss_median - erosion
+    im_for_ws = gaussian_filter(im_for_ws, sigma = 1)
 
-    Applies erosion, Gaussian filtering, and an adaptive threshold combining Otsu and intensity mean.
-    Iteratively adjusts the mask to recover missed seeds while ignoring low-gradient or low-intensity regions.
+    return im_for_ws
 
-    Parameters:
-        im_for_ws (np.ndarray): The (processed) image, inputed in watershed.
-        pos_at_t (np.ndarray): Seed positions (Y, X).
-        r (int): Erosion radius.
-        sigma (float): Gaussian blur sigma.
-        min_th_vol (int): Minimum allowed object volume.
-        max_th_vol (int): Maximum allowed object volume.
-        percent_of_th (int): Starting threshold percentage.
-        increment (int): Decrease step for threshold.
-        edge_thresh (float): Gradient threshold for ignoring background.
-        intensity_floor (float): Minimum intensity for inclusion.
-        min_mask_intensity (float): Minimum mask intensity.
-        use_mixed_threshold (bool): Whether to mix Otsu and mean thresholds.
-        mix_ratio (float): Weight for mixing threshold methods.
-        min_mask_floor_limit (float): Lower bound for intensity thresholding.
+def ws_adaptive_mask(
+    im_for_ws:np.ndarray,
+    pos_at_t:np.ndarray,
+    min_int:int=10,
+    max_int:int=500,
+    min_vol:int=300,
+    max_vol:int=1500
+)->list :
+    """A function that segments an image with the watershed function, using annotations as seeds and utilizing an adaptive mask.
+    All preset values are tested against single views, 2nd hdf5 layer.
+
+    Args:
+        im_for_ws (np.ndarray): pre-processed image
+        pos_at_t (np.ndarray): list of (x,y,z) annotation positions
+        max_int (int, optional): minmum intenstiy value for thresholds @ adaptive mask. Defaults to 500.
+        min_int (int, optional): maximum intenstiy value for thresholds @ adaptive mask. Defaults to 10.
+        min_vol (int, optional): minimum allowed volume of a image segment. Defaults to 300.
+        max_vol (int, optional):  maximum allowed volume of a image segment. Defaults to 1500.
 
     Returns:
-        np.ndarray: Labeled segmentation mask.
+        list: [segmentation mask, stats table] 
     """
 
     # USE ANNOTATION POSITION AS WS SEEDS
     pos_array = np.array([p[::-1] for p in pos_at_t]).round().astype(np.uint16)
-    seeds = np.zeros_like(im)
-    seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1)
-    all_seeds = set(np.unique(seeds) - {0}) # don't include the background
+    seeds = np.zeros_like(im_for_ws)
+    seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1) # each seed has it's own label
+    all_seeds = set(np.unique(seeds)) - {0} # don't include the background
 
     # MASK (TO BE UPDATED)
     def get_mask(thresh_val): # simpler mask generation, no ingore mask needed
@@ -191,123 +187,59 @@ def ws_adaptive_mask(
 
     #INITIALIZE VARIABLES
     ws = np.zeros_like(im_for_ws)
+    vols = {}
+    missed_seeds = all_seeds
 
-    missed_seeds = set(all_seeds).difference(np.unique(ws))
-    ones_ws = np.ones_like(ws)
+    # CALCULATE INSTENSITY TRESHOLDS
     intensities = percentile_intensities_sampler(im_for_ws,intensity_thresh_range=[min_int, max_int]) # calculates the list of thresholds
     intensities[100]=max_int # for first iteration
 
+    # STATS SETUP
+    stat_table = []
 
+    # ADAPTIVE MASKS - MAIN LOOP
     for pct, current_threshold in tqdm(sorted(intensities.items())[::-1],
         desc="Processing thresholds for watershed:",
         unit="step"):
 
-        if not missed_seeds: # break if previous step left no missing seeds
+        if not missed_seeds: # break if previous step found all seeds
             break
+
         mask = get_mask(current_threshold)
-        new_ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
+        new_ws = watershed(np.max(im_for_ws) - im_for_ws, seeds, mask=mask)
+
         labels, volumes = np.unique_counts(new_ws) # labels are consistent!
         vols = dict(zip(labels, volumes))
+
         for s in missed_seeds.intersection(vols.keys()):
             if s != 0 and min_vol < vols[s] < max_vol: # exclude background
-        missed_seeds = set(all_seeds).difference(np.unique(ws))
-
-    return ws
-
-def ws_adaptive_mask_v2(
-    im,
-    pos_at_t: np.ndarray,
-    ero_rad=7,
-    sigma=1.5,
-    min_th_vol=0,
-    max_th_vol=10000,
-    percent_of_th=70,
-    increment=10,
-    edge_thresh=0.001,
-    intensity_floor=200,
-    min_mask_intensity=100,
-    use_mixed_threshold=True,
-    mix_ratio=0.3,
-    min_mask_floor_limit=0
-):
-    """
-    Adaptive watershed segmentation using seed positions and image filtering.
-
-    Applies erosion, Gaussian filtering, and an adaptive threshold combining Otsu and intensity mean.
-    Iteratively adjusts the mask to recover missed seeds while ignoring low-gradient or low-intensity regions.
-
-    Parameters:
-        im (np.ndarray): Input image.
-        pos_at_t (np.ndarray): Seed positions (Y, X).
-        r (int): Erosion radius.
-        sigma (float): Gaussian blur sigma.
-        min_th_vol (int): Minimum allowed object volume.
-        max_th_vol (int): Maximum allowed object volume.
-        percent_of_th (int): Starting threshold percentage.
-        increment (int): Decrease step for threshold.
-        edge_thresh (float): Gradient threshold for ignoring background.
-        intensity_floor (float): Minimum intensity for inclusion.
-        min_mask_intensity (float): Minimum mask intensity.
-        use_mixed_threshold (bool): Whether to mix Otsu and mean thresholds.
-        mix_ratio (float): Weight for mixing threshold methods.
-        min_mask_floor_limit (float): Lower bound for intensity thresholding.
-
-    Returns:
-        np.ndarray: Labeled segmentation mask.
-    """
-
-    pos_array = np.array([p[::-1] for p in pos_at_t]).round().astype(np.uint16)
-
-    im_filtered = gaussian_filter(im, sigma=sigma)
-    im_filtered = median_filter(im_filtered, size=3)
-
-    gradient = sobel(im_filtered)
-    ignore_mask = (gradient < edge_thresh) & (im_filtered < intensity_floor)
-
-    erosion = grey_erosion(im_filtered, size=ero_rad)
-    im_for_ws = im_filtered - erosion
-    im_for_ws_gs = gaussian_filter(im_for_ws, sigma=1)
-
-    th_otsu = threshold_otsu(im_for_ws_gs)
-    th = (1 - mix_ratio) * th_otsu + mix_ratio * np.mean(im_for_ws_gs)
-
-    seeds = np.zeros_like(im)
-    seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1)
-
-    def get_mask(pct, min_intensity):
-        thresh_val = max(th * (pct / 100), min_intensity)
-        return (im_for_ws_gs > thresh_val) & (~ignore_mask)
-
-    current_min_intensity = min_mask_intensity
-    mask = get_mask(percent_of_th, current_min_intensity)
-    ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
-
-    all_seeds = np.unique(seeds)
-    missed_seeds = set(all_seeds).difference(np.unique(ws))
-    ones_ws = np.ones_like(ws)
-
-    def sum_labels(arr, lbls, label_vals):
-        return [np.sum(arr[lbls == v]) for v in label_vals]
-
-    while missed_seeds and percent_of_th > 0:
-        percent_of_th -= increment
-        current_min_intensity = max(current_min_intensity - 5, min_mask_floor_limit)
-        mask = get_mask(percent_of_th, current_min_intensity)
-        new_ws = watershed(np.max(im_for_ws_gs) - im_for_ws_gs, seeds, mask=mask)
-        label_list = np.arange(1, new_ws.max() + 1)
-        volumes = dict(zip(label_list, sum_labels(ones_ws, new_ws, label_list)))
-        for s in missed_seeds.intersection(label_list):
-            if min_th_vol < volumes[s] < max_th_vol:
                 ws[new_ws == s] = s
-        missed_seeds = set(all_seeds).difference(np.unique(ws))
-        print(
-            f"Th {percent_of_th}% – min_intensity={current_min_intensity} – missing seeds: {len(missed_seeds)}"
-        )
+        
+        # UPDATE MISSED SEEDS - STATS
+        n_found_now = len(missed_seeds) - (len(all_seeds) - len(set(np.unique(ws)))) # previous missed seeds - (missed seeds now)
+        missed_seeds = set(all_seeds).difference(np.unique(ws)) #now
+        n_missed_seeds = len(missed_seeds)
+        stat_table.append([f'{pct} %', current_threshold, n_found_now, n_missed_seeds])
 
-    return [ws, im_for_ws_gs]
+    return ws, all_seeds, missed_seeds, stat_table
 
-# optional
+def add_lost_seeds(ws_in:np.ndarray,
+                    seeds,
+                    missed_seeds,
+                    raw_image_shape,
+                    min_vol=300
+):
+    radius = (3*min_vol/(4*np.pi))**(1/3) # the sphere will have the minimum allowed volume
+    for ms in missed_seeds :
+        pos_ms = np.asarray(np.where(seeds == ms)).T.ravel()
+        print(pos_ms)
+        x, y, z = np.ogrid[:raw_image_shape[0], :raw_image_shape[1], :raw_image_shape[2]]
 
+    ms_mask = (z-pos_ms[2])**2 + (y-pos_ms[1])**2 + (x-pos_ms[0])**2 <= radius**2 
+
+    ws_in[ms_mask] = ms
+
+    return ws_in
 
 def remove_irregular_labels_3d(
     im,
