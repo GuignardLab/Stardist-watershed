@@ -10,42 +10,7 @@ from scipy.ndimage import gaussian_filter, median_filter, grey_erosion
 from skimage.filters import threshold_otsu, sobel
 import argparse
 from tqdm import tqdm
-
-
-def draw_sph_at_pos(
-    pos_at_t: np.ndarray, shape: tuple[int, int, int], radius: int
-) -> np.ndarray:
-    """
-    Draw spheres at specified positions in a 3D segmentation array.
-
-        pos_at_t (np.ndarray): Array of cell positions as (x, y, z) coordinates.
-        shape (tuple[int, int, int]): Shape of the segmentation image (x, y, z).
-        radius (int): Radius of the spheres to be drawn at each position.
-
-    Returns:
-        int:
-          New segmentation array with spheres drawn at cell positions.
-    """
-
-    padd_shape = (shape[0] + 2 * radius, shape[1] + 2 * radius, shape[2] + 2 * radius)
-    padd_seg = np.zeros(padd_shape, dtype=np.uint16)
-
-    sphere = ball(radius)
-    mask = 0 < sphere  # dtype=bool
-
-    for i, pos in enumerate(pos_at_t, start=1):
-        x, y, z = np.round(pos[::-1]).astype(int)
-        x, y, z = x + radius, y + radius, z + radius
-
-        x_start, x_end = x - radius, x + radius + 1
-        y_start, y_end = y - radius, y + radius + 1
-        z_start, z_end = z - radius, z + radius + 1
-
-        padd_seg[x_start:x_end, y_start:y_end, z_start:z_end][mask] = i
-
-    new_seg = padd_seg[radius:-radius, radius:-radius, radius:-radius]
-
-    return new_seg
+import watermasks.utils as utils
 
 def percentile_intensities_sampler(
     image:np.ndarray,
@@ -83,61 +48,6 @@ def percentile_intensities_sampler(
     return thresholds
 
 
-def extract_corr_seg_cells(
-    im_seg: np.ndarray, min_area=50, max_area=5000, threshold=0.8
-) -> np.ndarray:
-    """
-    Extracts correctly segmented cells based on manual positions.
-
-    Parameters:
-    - manual_positions: np.ndarray -> Array of manually labeled positions (x, y, z).
-    - segmented_image: np.ndarray -> The segmented image with labeled regions.
-
-    Returns:
-    int
-        np.ndarray -> New segmentation image with only correctly assigned cells.
-    """
-
-    filter_seg = np.zeros(im_seg.shape, dtype=np.uint16)
-
-    regions = {"coords": [], "labels": []}
-
-    for prop in regionprops(im_seg):
-        mask = im_seg == prop.label
-        if min_area <= prop.area <= max_area and prop.area > threshold:
-            filter_seg[mask] = (
-                prop.label
-            )  # filter_seg[label == prop.label] = prop.label
-            regions["coords"].append(prop.centroid)
-            regions["labels"].append(prop.label)
-
-    return filter_seg
-
-
-def region_filter_lsa(im_seg: np.ndarray, pos_at_t: np.ndarray) -> np.ndarray:
-
-    filter_seg = np.zeros(im_seg.shape, dtype=np.uint16)
-
-    regions = {"coords": [], "labels": []}
-    points = [pos[::-1] for pos in pos_at_t]
-
-    for prop in regionprops(im_seg):
-
-        regions["coords"].append(prop.centroid)
-        regions["labels"].append(prop.label)
-
-    cost = cdist(points, regions["coords"])
-    row_ind, col_ind = linear_sum_assignment(cost)
-    hits = np.array(regions["labels"])[col_ind]
-
-    corr_seg = np.zeros_like(filter_seg)
-
-    for im_seg_id in hits:
-        corr_seg[im_seg == im_seg_id] = im_seg_id
-
-    return corr_seg
-
-
 def preprocess_im(
     im,
     gauss_sigma=1,
@@ -152,13 +62,42 @@ def preprocess_im(
 
     return im_for_ws
 
+def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_image:np.ndarray):
+    """Using the lineage tree, this function creates an image containing a different label at each annotation position.
+    Positions share the same coordinate system as the raw image (to be used for watershed).
+
+    Args:
+        lT (_type_): _description_
+        tp (int): _description_
+        view (str): _description_
+        R_of_t (np.ndarray): _description_
+        scaling (np.ndarray): _description_
+        raw_image (np.ndarray): _description_
+
+    Returns:
+        _type_: _description_
+    """    
+    reg_pos_at_t = []
+    for mastodon_id_t in lT.time_nodes[tp]:
+        x, y, z = utils.registered_position_of_id_in_t(mastodon_id_t, lT, tp, R_of_t, view, scaling)
+        reg_pos_at_t.append([x, y, z])
+    reg_pos_at_t = np.asarray(reg_pos_at_t)
+
+    seeds_pos = np.array([p[::-1] for p in reg_pos_at_t]).round().astype(np.uint16) # the image needs (z, y, x)
+    seeds_array = np.zeros_like(raw_image)
+    seeds_array[tuple(seeds_pos.T)] = np.arange(1, len(reg_pos_at_t) + 1) # each seed has it's own label
+
+    return seeds_pos, seeds_array
+
 def ws_adaptive_mask(
     im_for_ws:np.ndarray,
-    pos_at_t:np.ndarray,
+    seeds_array:np.ndarray,
     min_int:int=10,
     max_int:int=500,
     min_vol:int=300,
-    max_vol:int=1500
+    max_vol:int=1500,
+    percentage_list:list = [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10]
+
 )->list :
     """A function that segments an image with the watershed function, using annotations as seeds and utilizing an adaptive mask.
     All preset values are tested against single views, 2nd hdf5 layer.
@@ -170,16 +109,16 @@ def ws_adaptive_mask(
         min_int (int, optional): maximum intenstiy value for thresholds @ adaptive mask. Defaults to 10.
         min_vol (int, optional): minimum allowed volume of a image segment. Defaults to 300.
         max_vol (int, optional):  maximum allowed volume of a image segment. Defaults to 1500.
+        percentage_list (list)
+        !!!!!!! Add description
+
 
     Returns:
         list: [segmentation mask, stats table] 
     """
 
-    # USE ANNOTATION POSITION AS WS SEEDS
-    pos_array = np.array([p[::-1] for p in pos_at_t]).round().astype(np.uint16)
-    seeds = np.zeros_like(im_for_ws)
-    seeds[tuple(pos_array.T)] = np.arange(1, len(pos_at_t) + 1) # each seed has it's own label
-    all_seeds = set(np.unique(seeds)) - {0} # don't include the background
+    # GET THE SET OF ALL SEEDS VALUES
+    all_seeds = set(np.unique(seeds_array)) - {0} # don't include the background
 
     # MASK (TO BE UPDATED)
     def get_mask(thresh_val): # simpler mask generation, no ingore mask needed
@@ -191,7 +130,7 @@ def ws_adaptive_mask(
     missed_seeds = all_seeds
 
     # CALCULATE INSTENSITY TRESHOLDS
-    intensities = percentile_intensities_sampler(im_for_ws,intensity_thresh_range=[min_int, max_int]) # calculates the list of thresholds
+    intensities = percentile_intensities_sampler(im_for_ws,intensity_thresh_range=[min_int, max_int], percentages=percentage_list) # calculates the list of thresholds
     intensities[100]=max_int # for first iteration
 
     # STATS SETUP
@@ -206,7 +145,7 @@ def ws_adaptive_mask(
             break
 
         mask = get_mask(current_threshold)
-        new_ws = watershed(np.max(im_for_ws) - im_for_ws, seeds, mask=mask)
+        new_ws = watershed(np.max(im_for_ws) - im_for_ws, seeds_array, mask=mask)
 
         labels, volumes = np.unique_counts(new_ws) # labels are consistent!
         vols = dict(zip(labels, volumes))
@@ -215,29 +154,42 @@ def ws_adaptive_mask(
             if s != 0 and min_vol < vols[s] < max_vol: # exclude background
                 ws[new_ws == s] = s
         
-        # UPDATE MISSED SEEDS - STATS
-        n_found_now = len(missed_seeds) - (len(all_seeds) - len(set(np.unique(ws)))) # previous missed seeds - (missed seeds now)
+        # UPDATE MISSED SEEDS & GET STATS
+        n_found_now = len(missed_seeds) - (len(all_seeds) - len(set(np.unique(ws)))) - len({0}) # previous missed seeds - (missed seeds now) - background
         missed_seeds = set(all_seeds).difference(np.unique(ws)) #now
         n_missed_seeds = len(missed_seeds)
         stat_table.append([f'{pct} %', current_threshold, n_found_now, n_missed_seeds])
 
     return ws, all_seeds, missed_seeds, stat_table
 
+
 def add_lost_seeds(ws_in:np.ndarray,
-                    seeds,
+                    seeds_array,
                     missed_seeds,
-                    raw_image_shape,
                     min_vol=300
 ):
-    radius = (3*min_vol/(4*np.pi))**(1/3) # the sphere will have the minimum allowed volume
-    for ms in missed_seeds :
-        pos_ms = np.asarray(np.where(seeds == ms)).T.ravel()
-        print(pos_ms)
-        x, y, z = np.ogrid[:raw_image_shape[0], :raw_image_shape[1], :raw_image_shape[2]]
+    """Adds a shperical mask around all missing seeds.
 
-    ms_mask = (z-pos_ms[2])**2 + (y-pos_ms[1])**2 + (x-pos_ms[0])**2 <= radius**2 
+    Args:
+        ws_in (np.ndarray): _description_
+        seeds_array (_type_): _description_
+        missed_seeds (_type_): _description_
+        min_vol (int, optional): _description_. Defaults to 300.
 
-    ws_in[ms_mask] = ms
+    Returns:
+        _type_: _description_
+    """
+
+    rad = (3*min_vol/(4*np.pi))**(1/3) # the sphere will have the minimum allowed volume
+    rad = int(np.round(rad).astype(np.uint8))
+    ball(rad)
+    sph_mask = ball(rad) > 0 # make a boolean mask with shperical shape
+
+    for ms in missed_seeds:
+        pos_ms = np.asarray(np.where(seeds_array == ms), dtype=int).ravel() # this is costly
+        padd = ws_in < 0 # this is False everywhere
+        padd[pos_ms[0]-rad:pos_ms[0] + rad +1, pos_ms[1]-rad:pos_ms[1]+rad+1, pos_ms[2]-rad:pos_ms[2]+rad+1] = sph_mask
+        ws_in[padd] = seeds_array[tuple(pos_ms.T)]
 
     return ws_in
 
@@ -288,7 +240,7 @@ def remove_irregular_labels_3d(
     return cleaned_ws
 
 
-def main_function(
+def main_function( # to be updated 
     t: int,
     method: str = ["watershed", "sphere", "segmentation"],
     output_path: str = None,
