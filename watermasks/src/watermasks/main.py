@@ -62,30 +62,41 @@ def preprocess_im(
 
     return im_for_ws
 
-def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_image:np.ndarray):
-    """Using the lineage tree, this function creates an image containing a different label at each annotation position.
+def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_image:np.ndarray, trans_in_rev:bool=False)-> list[np.ndarray, np.ndarray]: 
+    """
+    Using the lineage tree, this function creates an image containing a different label at each annotation position.
     Positions share the same coordinate system as the raw image (to be used for watershed).
-
     Args:
-        lT (_type_): _description_
-        tp (int): _description_
-        view (str): _description_
-        R_of_t (np.ndarray): _description_
-        scaling (np.ndarray): _description_
-        raw_image (np.ndarray): _description_
+        lT (_type_): Lineage tree input to get annotation positions
+        tp (int): Timepoint
+        view (str): View in the hdf5
+        R_of_t (np.ndarray): Registration matrices, as loaded form the .xml file.
+        scaling (np.ndarray): the ratio of the shape of the current image over the shape of 0-th level of hdf5 = 1/downsampling_list. 
+                                It should be of the form [a, b, c], whith a, b, c <= 1 .
+        raw_image (np.ndarray): The loaded image.
+        trans_in_rev (bool, optional): Dictates the sequence of application of the registration transofmation matrices, as loaded from the .xml 
+                                        . Defaults to False.
+
+    Raises:
+        IndexError: Reminds to the user to change the trans_in_rev variable in case of index error raise.
 
     Returns:
-        _type_: _description_
-    """    
+        list: [all seeds postition (np.ndarray). A seeded image with a unique label at each annotation position (np.ndarray)]
+    """
+    
     reg_pos_at_t = []
     for mastodon_id_t in lT.time_nodes[tp]:
-        x, y, z = utils.registered_position_of_id_in_t(mastodon_id_t, lT, tp, R_of_t, view, scaling)
-        reg_pos_at_t.append([x, y, z])
+        x, y, z = utils.registered_position_of_id_in_t(mastodon_id_t, lT, tp, R_of_t, view, scaling, Transformations_In_Reverse=trans_in_rev)
+        reg_pos_at_t.append([x, y, z]) #floating numbers
     reg_pos_at_t = np.asarray(reg_pos_at_t)
 
-    seeds_pos = np.array([p[::-1] for p in reg_pos_at_t]).round().astype(np.uint16) # the image needs (z, y, x)
+    seeds_pos = np.array([p[::-1] for p in reg_pos_at_t]).round().astype(np.uint16) # pixel positions, given that the image coords are (z, y, x)
     seeds_array = np.zeros_like(raw_image)
-    seeds_array[tuple(seeds_pos.T)] = np.arange(1, len(reg_pos_at_t) + 1) # each seed has it's own label
+    
+    try:
+        seeds_array[tuple(seeds_pos.T)] = np.arange(1, len(reg_pos_at_t) + 1) # an with a unique label at each annotation pixel position 
+    except IndexError:
+        raise IndexError(f'Attempted position in array is out of bounds. Try negating "trans_in_rev" variable from False to True or vice versa.')
 
     return seeds_pos, seeds_array
 
@@ -151,7 +162,7 @@ def ws_adaptive_mask(
         vols = dict(zip(labels, volumes))
 
         for s in missed_seeds.intersection(vols.keys()):
-            if s != 0 and min_vol < vols[s] < max_vol: # exclude background
+            if min_vol < vols[s] < max_vol: # background is already excluded
                 ws[new_ws == s] = s
         
         # UPDATE MISSED SEEDS & GET STATS
@@ -161,7 +172,6 @@ def ws_adaptive_mask(
         stat_table.append([f'{pct} %', current_threshold, n_found_now, n_missed_seeds])
 
     return ws, all_seeds, missed_seeds, stat_table
-
 
 def add_lost_seeds(ws_in:np.ndarray,
                     seeds_array,
