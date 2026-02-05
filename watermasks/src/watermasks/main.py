@@ -83,7 +83,7 @@ def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_i
     Returns:
         list: [all seeds postition (np.ndarray). A seeded image with a unique label at each annotation position (np.ndarray)]
     """
-    
+
     reg_pos_at_t = []
     for mastodon_id_t in lT.time_nodes[tp]:
         x, y, z = utils.registered_position_of_id_in_t(mastodon_id_t, lT, tp, R_of_t, view, scaling, Transformations_In_Reverse=trans_in_rev)
@@ -109,7 +109,7 @@ def ws_adaptive_mask(
     max_vol:int=1500,
     percentage_list:list = [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10]
 
-)->list :
+)->list[np.ndarray, list] :
     """A function that segments an image with the watershed function, using annotations as seeds and utilizing an adaptive mask.
     All preset values are tested against single views, 2nd hdf5 layer.
 
@@ -120,9 +120,7 @@ def ws_adaptive_mask(
         min_int (int, optional): maximum intenstiy value for thresholds @ adaptive mask. Defaults to 10.
         min_vol (int, optional): minimum allowed volume of a image segment. Defaults to 300.
         max_vol (int, optional):  maximum allowed volume of a image segment. Defaults to 1500.
-        percentage_list (list)
-        !!!!!!! Add description
-
+        percentage_list (list): list of intensity percentiles to be used as thresholds. 
 
     Returns:
         list: [segmentation mask, stats table] 
@@ -169,7 +167,7 @@ def ws_adaptive_mask(
         n_found_now = len(missed_seeds) - (len(all_seeds) - len(set(np.unique(ws)))) - len({0}) # previous missed seeds - (missed seeds now) - background
         missed_seeds = set(all_seeds).difference(np.unique(ws)) #now
         n_missed_seeds = len(missed_seeds)
-        stat_table.append([f'{pct} %', current_threshold, n_found_now, n_missed_seeds])
+        stat_table.append([pct, current_threshold, n_found_now, n_missed_seeds])
 
     return ws, all_seeds, missed_seeds, stat_table
 

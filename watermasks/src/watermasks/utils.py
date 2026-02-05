@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 from time import perf_counter
 from contextlib import contextmanager
+from beautifultable import BeautifulTable
 
 def paths(dataset_name:str):
     """Imports paths from a .txt file in the parent directory of the project.
@@ -390,6 +391,15 @@ def view_overlays_3d_V2(volumes, im_names, cmaps , alphas:None=None, same_contra
     # RETURN COMPOSITE WIDGET
     # ----------------------------
     return VBox([HBox(checkboxes), interactive(update, z=slider)])
+
+def display_ws_thresholding_results(stat_table, all_seeds):
+
+    table = BeautifulTable()
+    table.columns.header = ['Percentage', 'Percentile Value', 'Found Seeds', 'Missed Seeds']
+    for i in range(len(stat_table)):
+        table.rows.insert(i, [f'{stat_table[i][0]} %', *[stat_table[i][j] for j in range(1, len(stat_table[i]))]])
+    print(table)
+    print(f'Out of {len(all_seeds)} anotations in total, missed seeds: {stat_table[-1][-1]}({stat_table[-1][-1]/len(all_seeds)*100:.3g}%)')
 
 @contextmanager
 def block_timer():
