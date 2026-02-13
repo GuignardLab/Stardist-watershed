@@ -94,7 +94,8 @@ def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_i
     seeds_array = np.zeros_like(raw_image)
     
     try:
-        seeds_array[tuple(seeds_pos.T)] = np.arange(1, len(reg_pos_at_t) + 1) # an with a unique label at each annotation pixel position 
+        seeds_array[tuple(seeds_pos.T)] = np.arange(1, len(reg_pos_at_t) + 1) # an with a unique label at each annotation pixel position  # an with a unique label at each annotation pixel position
+        seeds_pos = dict(zip(np.arange(1, len(reg_pos_at_t) + 1), tuple(seeds_pos)))
     except IndexError:
         raise IndexError(f'Attempted position in array is out of bounds. Try negating "trans_in_rev" variable from False to True or vice versa.')
 
@@ -172,7 +173,7 @@ def ws_adaptive_mask(
     return ws, all_seeds, missed_seeds, stat_table
 
 def add_lost_seeds(ws_in:np.ndarray,
-                    seeds_array,
+                    seeds_pos,
                     missed_seeds,
                     min_vol=300
 ):
@@ -193,11 +194,11 @@ def add_lost_seeds(ws_in:np.ndarray,
     ball(rad)
     sph_mask = ball(rad) > 0 # make a boolean mask with shperical shape
 
-    for ms in missed_seeds:
-        pos_ms = np.asarray(np.where(seeds_array == ms), dtype=int).ravel() # this is costly
+    for label in missed_seeds:
+        pos_ms = seeds_pos[label]
         padd = ws_in < 0 # this is False everywhere
         padd[pos_ms[0]-rad:pos_ms[0] + rad +1, pos_ms[1]-rad:pos_ms[1]+rad+1, pos_ms[2]-rad:pos_ms[2]+rad+1] = sph_mask
-        ws_in[padd] = seeds_array[tuple(pos_ms.T)]
+        ws_in[padd] = label
 
     return ws_in
 
