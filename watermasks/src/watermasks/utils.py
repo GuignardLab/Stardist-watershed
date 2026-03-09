@@ -8,6 +8,7 @@ from time import perf_counter
 from contextlib import contextmanager
 from beautifultable import BeautifulTable
 
+# IMPORTING IMAGE DATA AND ANNOTATIONS
 def paths(dataset_name:str):
     """Imports paths from a .txt file in the parent directory of the project.
 
@@ -140,6 +141,57 @@ def registered_position_of_id_in_t(mastodon_id:int, lT, t_:int, R_of_t:dict, vie
     return(xi, yi, zi)
 
 
+# CROP WATERSHED FUNCTIONS
+def crop_around_seed(image_:np.ndarray, seed_label_:int, seeds_pos_:dict[int, list], radius_:int)->np.ndarray:
+    """Create a boxed crop of an image, centered around an annotation seed for a 
+
+    Args:
+        image_ (np.ndarray): Image to be croped.
+        seed_label_ (int): Label of the seed to be in the center of the crop.
+        seed_pos_ (dict[in, list]): A dictionary that gives the position of a given seed.
+        radius_ (int): 1/2 -1 the size of the crop in each direction.
+
+    Returns:
+        np.ndarray: cropped image around the seed.
+"""
+
+    sp = seeds_pos_[seed_label_]
+
+    z_min = max(sp[0]-radius_, 0)
+    y_min = max(sp[1]-radius_, 0)
+    x_min = max(sp[2]-radius_, 0)
+
+    z_max = min(sp[0]+radius_+1, image_.shape[0])
+    y_max = min(sp[1]+radius_+1, image_.shape[1])
+    x_max = min(sp[2]+radius_+1, image_.shape[2])
+
+    return image_[z_min:z_max, y_min:y_max, x_min:x_max]
+
+
+def update_image(big_image, small_image, seeds_pos, label_):
+    big_mask = big_image < -1 # This is False everywhere
+
+    sp = seeds_pos[label_]
+    small_rad = int((small_image.shape[0]-1)/2)
+
+    z_min = max(sp[0]-small_rad, 0)
+    y_min = max(sp[1]-small_rad, 0)
+    x_min = max(sp[2]-small_rad, 0)
+
+    z_max = min(sp[0]+small_rad+1, big_image.shape[0])
+    y_max = min(sp[1]+small_rad+1, big_image.shape[1])
+    x_max = min(sp[2]+small_rad+1, big_image.shape[2])
+
+    small_mask = small_image == label_
+    big_mask[z_min: z_max, y_min:y_max, x_min:x_max]=small_mask
+
+    big_image[big_mask] = label_
+
+    return big_image
+
+
+
+# VISUALIZATIONS PART
 def paint_annotations(
     t_:int,
     lT,

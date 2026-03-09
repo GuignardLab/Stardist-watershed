@@ -11,49 +11,27 @@ from skimage.filters import threshold_otsu, sobel
 import argparse
 from tqdm import tqdm
 import watermasks.utils as utils
+from scipy.ndimage import distance_transform_edt as dte
+from typing import Sequence
 
-def percentile_intensities_sampler(
-    image:np.ndarray,
-    intensity_thresh_range:list[int]=[10,500], # good for single view, non-deconvolved
-    percentages:list[int]=[99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10],
-    print_thresholds:bool=False
-) -> dict:
-    """ Outputs intensity values for thresholds using percentiles of intensity (to be used in the adaptive watershed mask). 
-
-    Args:
-        image (np.ndarray): The imput image
-        intensity_thresh_range (list[int], optional): Values for initial filtering. Defaults to list[int][10,500] (probabbly good for no Deconvolved dataset).
-        percentages (list[int], optional): the intensity percentiles to sample. Defaults to [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10].
-        print_thresholds (bool, optional): Set to true if you want the percentage and percentile value pairs printed. Defaults to False.
-
-    Returns:
-        dict: a dictionary with percentages as keys and percentile intensities values: e.g. {99.99: 523}
-    """    
-
-    thresholds = {}
-    flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a butchered flattened 1-D array
-
-    thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages} 
-    # this makes the dictionary
-
-    if print_thresholds == True:
-        from beautifultable import BeautifulTable
-        table = BeautifulTable()
-        table.columns.header = ['Percentage', 'Percentile Intensity']
-        for first, second in thresholds.items():
-             table.rows.append([f'{first} %', second])
-        table.set_style(BeautifulTable.STYLE_SEPARATED)
-        print(table)
-    
-    return thresholds
-
-
+# ~~~~ IMAGE PROCESSING AND DATA MANIPULATION  ~~~~
 def preprocess_im(
     im,
     gauss_sigma=1,
     median_size=1,
     erosion_radius=7
 ):
+    """The sequence of image processing steps that have been giving the best results for the 2nd compression hdf5 layer.
+
+    Args:
+        im (_type_): _description_
+        gauss_sigma (int, optional): _description_. Defaults to 1.
+        median_size (int, optional): _description_. Defaults to 1.
+        erosion_radius (int, optional): _description_. Defaults to 7.
+
+    Returns:
+        _type_: _description_
+    """    
     im_gauss = gaussian_filter(im, sigma=gauss_sigma)
     im_gauss_median = median_filter(im_gauss, size=median_size) # this seems that is not doing much! (inspection by eye)
     erosion = grey_erosion(im_gauss_median, size=erosion_radius)
@@ -61,6 +39,7 @@ def preprocess_im(
     im_for_ws = gaussian_filter(im_for_ws, sigma = 1)
 
     return im_for_ws
+
 
 def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_image:np.ndarray, trans_in_rev:bool=False)-> list[np.ndarray, np.ndarray]: 
     """
@@ -100,6 +79,44 @@ def get_seeds(lT, tp:int, view:str, R_of_t:np.ndarray, scaling:np.ndarray, raw_i
         raise IndexError(f'Attempted position in array is out of bounds. Try negating "trans_in_rev" variable from False to True or vice versa.')
 
     return seeds_pos, seeds_array
+
+
+# ~~~~ WHOLE-IMAGE WATERSHED FUNCTIONS -> Watershed is applied to the whole image per thershold. ~~~~
+def percentile_intensities_sampler(
+    image:np.ndarray,
+    intensity_thresh_range:list[int]=[10,500], # good for single view, non-deconvolved
+    percentages:list[int]=[99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10],
+    print_thresholds:bool=False
+) -> dict:
+    """ Outputs intensity values for thresholds using percentiles of intensity (to be used in the adaptive watershed mask). 
+
+    Args:
+        image (np.ndarray): The imput image
+        intensity_thresh_range (list[int], optional): Values for initial filtering. Defaults to list[int][10,500] (probabbly good for no Deconvolved dataset).
+        percentages (list[int], optional): the intensity percentiles to sample. Defaults to [99.99, 99.9, 99, 97, 95, 92, 90, 80, 50, 30, 10].
+        print_thresholds (bool, optional): Set to true if you want the percentage and percentile value pairs printed. Defaults to False.
+
+    Returns:
+        dict: a dictionary with percentages as keys and percentile intensities values: e.g. {99.99: 523}
+    """    
+
+    thresholds = {}
+    flat_im = image[(image > intensity_thresh_range[0]) & (image < intensity_thresh_range[1])] # reminder: this creates a butchered flattened 1-D array
+
+    thresholds = {pct : np.percentile(flat_im, pct) for pct in percentages} 
+    # this makes the dictionary
+
+    if print_thresholds == True:
+        from beautifultable import BeautifulTable
+        table = BeautifulTable()
+        table.columns.header = ['Percentage', 'Percentile Intensity']
+        for first, second in thresholds.items():
+             table.rows.append([f'{first} %', second])
+        table.set_style(BeautifulTable.STYLE_SEPARATED)
+        print(table)
+    
+    return thresholds
+
 
 def ws_adaptive_mask(
     im_for_ws:np.ndarray,
@@ -172,12 +189,136 @@ def ws_adaptive_mask(
 
     return ws, all_seeds, missed_seeds, stat_table
 
+
+# ~~~~ CROPPED IMAGE WATERSHED FUNCTIONS -> Watershed is applied to image crops first and then the whole-image segmentation is updated. ~~~~
+def crop_around_seed(image_:np.ndarray, seeds_pos:dict[int, np.ndarray], seed_label_:int, radius_:int)->np.ndarray:
+    """Create a boxed crop of an image, centered around an seed in the seed_array, with a width of 2*radius + 1.
+
+    Args:
+        image_ (np.ndarray): Large input image to be croped
+        seed_label_ (int): Seed label. The given seed will be in the center of the cropped image
+        radius_ (int): 1/2 -1 the size of the crop in each direction
+
+    Returns:
+        np.ndarray: cropped image around the seed. 
+    """    
+
+    sp = seeds_pos[seed_label_]
+
+    z_min = max(sp[0]-radius_, 0)
+    y_min = max(sp[1]-radius_, 0)
+    x_min = max(sp[2]-radius_, 0)
+
+    z_max = min(sp[0]+radius_+1, image_.shape[0])
+    y_max = min(sp[1]+radius_+1, image_.shape[1])
+    x_max = min(sp[2]+radius_+1, image_.shape[2])
+
+    return image_[z_min:z_max, y_min:y_max, x_min:x_max]
+
+
+def update_image(empty_watershed:np.ndarray, small_image:np.ndarray, seeds_pos:dict[int, np.ndarray], label_:int)->np.ndarray:
+    """
+    A funtion that updates a larger segmentation image from a smaller (cropped) segmentation image.
+    Only the label = label_ is updated in the larger image. It is assumed that the large image does not contain
+    the label in question.
+
+    Args:
+        empty_watershed (np.ndarray]): The large input segmetnation mask
+        small_image (np.ndarray]): A segmetnation mask of a smaller cropped image.
+        seeds_pos (dict[int, np.ndarray]): A dictionary with seed labels as keys and the cooresponding positions
+            in the seed_array as values.
+        label_ (int): The label of the seed.
+
+    Returns:
+        np.ndarray: The updated large (full-sized) segmentation mask.
+    """
+
+    big_mask = empty_watershed < -1 # This is False everywhere
+
+    sp = seeds_pos[label_]
+    small_rad = int((small_image.shape[0]-1)/2)
+
+    z_min = max(sp[0]-small_rad, 0)
+    y_min = max(sp[1]-small_rad, 0)
+    x_min = max(sp[2]-small_rad, 0)
+
+    z_max = min(sp[0]+small_rad+1, empty_watershed.shape[0])
+    y_max = min(sp[1]+small_rad+1, empty_watershed.shape[1])
+    x_max = min(sp[2]+small_rad+1, empty_watershed.shape[2])
+
+    small_mask = small_image == label_
+    big_mask[z_min: z_max, y_min:y_max, x_min:x_max]=small_mask
+
+    empty_watershed[big_mask] = label_
+
+    return empty_watershed
+
+
+# ~~~~ GEOMETRY MASKS ~~~~
+def find_median_plane(point_1_position:np.ndarray, point_2_position:np.ndarray, image_shape: Sequence[int])->np.ndarray[bool]:
+    """
+    A function that creates a boolean mask containing the locus of all array positions that are eqidistant to a
+    pair of array points.
+
+    Args:
+        point_1_position (np.ndarray): The aray position of the first point 
+        point_2_position (np.ndarray): The aray position of the second point 
+        image_shape (Sequence[int]): The desired output shape of the mask
+
+    Returns:
+        np.ndarray (bool): A boolean mask with True values for all array positions that satisfy d(point_1) = d(point_2)
+            should be planes in 3d space. The plain the median-perpendicular plane to the linearsigment jointing the points.
+    """
+
+    dist_arr_1 = np.zeros(image_shape)
+    pad = dist_arr_1 == 0
+    dist_arr_1[pad] = 1
+    dist_arr_1[tuple(point_1_position.T)] = 0
+    dist_arr_1 = dte(dist_arr_1)
+
+    dist_arr_2 = np.zeros(image_shape)
+    pad = dist_arr_2 == 0
+    dist_arr_2[pad] = 1
+    dist_arr_2[tuple(point_2_position.T)] = 0
+    dist_arr_2 = dte(dist_arr_2)
+
+    median_plane_mask = np.abs(dist_arr_2 - dist_arr_1) <= 1
+
+    return median_plane_mask
+
+
+def sphere_mask(array_shape: tuple, center: tuple, radius: float) -> np.ndarray:
+    """
+    Creates a boolean mask where True indicates a point is inside a sphere.
+    
+    Parameters:
+        array_shape : Shape of the output mask (e.g., (D, H, W) for 3D)
+        center      : Center of the sphere (e.g., (z0, y0, x0))
+        radius      : Radius of the sphere
+    
+    Returns:
+        Boolean NumPy array of the given shape.
+    """
+    # Build a grid of indices for each dimension
+    grids = np.ogrid[tuple(slice(0, s) for s in array_shape)]
+    
+    # Sum squared distances along each dimension
+    dist_sq = sum(
+        (grid - c) ** 2
+        for grid, c in zip(grids, center)
+    )
+    
+    return dist_sq <= radius ** 2
+
+
+# ~~~~ OLDER FUNCTIONS TO ASSESS SEGMENTATION QUALITY AND UPDATE THE SEGMENTATION. To be updated. ~~~~
 def add_lost_seeds(ws_in:np.ndarray,
                     seeds_pos,
                     missed_seeds,
                     min_vol=300
 ):
-    """Adds a shperical mask around all missing seeds.
+    """
+    Adds a shperical segmentation mask around all missing seeds with the given labels.
 
     Args:
         ws_in (np.ndarray): _description_
@@ -191,7 +332,6 @@ def add_lost_seeds(ws_in:np.ndarray,
 
     rad = (3*min_vol/(4*np.pi))**(1/3) # the sphere will have the minimum allowed volume
     rad = int(np.round(rad).astype(np.uint8))
-    ball(rad)
     sph_mask = ball(rad) > 0 # make a boolean mask with shperical shape
 
     for label in missed_seeds:
@@ -202,9 +342,10 @@ def add_lost_seeds(ws_in:np.ndarray,
 
     return ws_in
 
+
 def remove_irregular_labels_3d(
-    im,
-    ws,
+    im:np.ndarray,
+    ws:np.ndarray,
     min_vol=500,
     max_vol=100000,
     max_ecc=0.99,
@@ -248,52 +389,3 @@ def remove_irregular_labels_3d(
 
     return cleaned_ws
 
-
-def main_function( # to be updated 
-    t: int,
-    method: str = ["watershed", "sphere", "segmentation"],
-    output_path: str = None,
-    input_path: str = None,
-    lineage_tree_path: str = None,
-):
-    im = imread(input_path.format(t=t))
-    lT = LineageTree.load(lineage_tree_path, file_type="mastodon") #<--- have changed that
-    pos_at_t = [lT.pos[c] for c in lT.nodes_at_t(t)]
-    ws = ws_adaptive_mask(im, pos_at_t)
-    cleaned_ws = remove_irregular_labels_3d(im, ws)
-
-    imwrite(output_path, cleaned_ws)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="Hybrid watershed",
-        description="Run a watershed algorithm to create a new ground truth image",
-    )
-    parser.add_argument("-t", "--time", type=int, help="Time to process")
-    parser.add_argument(
-        "-m",
-        "--method",
-        type=str,
-        choices=["watershed", "sphere", "segmentation"],
-        help="Methods of creating a new ground truth image",
-    )
-    parser.add_argument(
-        "-o", "--output-path", type=str, help="Output path for a new ground truth image"
-    )
-    parser.add_argument(
-        "-i", "--input-path", type=str, help="Input path for pattern with t as time"
-    )
-    parser.add_argument(
-        "-lt", "--lineage-tree-path", type=str, help="Path to lineage tree file"
-    )
-
-    args = parser.parse_args()
-
-    main_function(
-        t=args.time,
-        method=args.method,
-        output_path=args.output_path,
-        input_path=args.input_path,
-        lineage_tree_path=args.lineage_tree_path,
-    )
