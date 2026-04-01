@@ -11,7 +11,7 @@ from skimage.filters import threshold_otsu, sobel
 import argparse
 from tqdm import tqdm
 import watermasks.utils as utils
-from scipy.ndimage import distance_transform_edt as dte
+from scipy.ndimage import distance_transform_edt, distance_transform_cdt
 from typing import Sequence
 
 # ~~~~ IMAGE PROCESSING AND DATA MANIPULATION  ~~~~
@@ -216,45 +216,57 @@ def crop_around_seed(image_:np.ndarray, seeds_pos:dict[int, np.ndarray], seed_la
     return image_[z_min:z_max, y_min:y_max, x_min:x_max]
 
 
-def update_image(empty_watershed:np.ndarray, small_image:np.ndarray, seeds_pos:dict[int, np.ndarray], label_:int)->np.ndarray:
-    """
-    A funtion that updates a larger segmentation image from a smaller (cropped) segmentation image.
-    Only the label = label_ is updated in the larger image. It is assumed that the large image does not contain
-    the label in question.
+def update_image(big_image, small_image, spibi, spisi, label_):
+#     """
+#     A funtion that updates a larger segmentation image from a smaller (cropped) segmentation image.
+#     Only the label = label_ is updated in the larger image. It is assumed that the large image does not contain
+#     the label in question.
 
-    Args:
-        empty_watershed (np.ndarray]): The large input segmetnation mask
-        small_image (np.ndarray]): A segmetnation mask of a smaller cropped image.
-        seeds_pos (dict[int, np.ndarray]): A dictionary with seed labels as keys and the cooresponding positions
-            in the seed_array as values.
-        label_ (int): The label of the seed.
+#     Args:
+#         empty_watershed (np.ndarray]): The large input segmetnation mask
+#         small_image (np.ndarray]): A segmetnation mask of a smaller cropped image.
+#         seeds_pos (dict[int, np.ndarray]): A dictionary with seed labels as keys and the cooresponding positions
+#             in the seed_array as values.
+#         label_ (int): The label of the seed.
 
-    Returns:
-        np.ndarray: The updated large (full-sized) segmentation mask.
-    """
+#     Returns:
+#         np.ndarray: The updated large (full-sized) segmentation mask.
+#     """
+    big_mask = big_image < -1 # This is False everywhere
+    sp = [int(seep) for seep in spibi]
+    form_bell_z = spisi[0]
+    form_down_y = spisi[1]
+    form_left_x = spisi[2]
+    # These may be different (if say, the annotation is near the bounds of the image)
+    # or if we choose to use anisotropic cropping
 
-    big_mask = empty_watershed < -1 # This is False everywhere
+    z_min = max(sp[0]-form_bell_z, 0)
+    y_min = max(sp[1]-form_down_y, 0)
+    x_min = max(sp[2]-form_left_x, 0)
 
-    sp = seeds_pos[label_]
-    small_rad = int((small_image.shape[0]-1)/2)
-
-    z_min = max(sp[0]-small_rad, 0)
-    y_min = max(sp[1]-small_rad, 0)
-    x_min = max(sp[2]-small_rad, 0)
-
-    z_max = min(sp[0]+small_rad+1, empty_watershed.shape[0])
-    y_max = min(sp[1]+small_rad+1, empty_watershed.shape[1])
-    x_max = min(sp[2]+small_rad+1, empty_watershed.shape[2])
+    z_max = min(sp[0]-form_bell_z+small_image.shape[0], big_image.shape[0])
+    y_max = min(sp[1]-form_down_y+small_image.shape[1], big_image.shape[1])
+    x_max = min(sp[2]-form_left_x+small_image.shape[2], big_image.shape[2])
 
     small_mask = small_image == label_
     big_mask[z_min: z_max, y_min:y_max, x_min:x_max]=small_mask
+    big_image[big_mask] = label_
 
-    empty_watershed[big_mask] = label_
-
-    return empty_watershed
+    return big_image
 
 
 # ~~~~ GEOMETRY MASKS ~~~~
+def find_locus_closest_to_point(query_point, crop_array):
+	locus_mask = crop_array > 0
+	indices = distance_transform_cdt(~locus_mask, return_distances=False, return_indices=True)
+	
+	allz = indices[0,:,:,:] == query_point[0]
+	ally = indices[1,:,:,:] == query_point[1]
+	allx = indices[2,:,:,:] == query_point[2]
+	locus = allz & ally & allx
+	
+	return locus
+
 def find_median_plane(point_1_position:np.ndarray, point_2_position:np.ndarray, image_shape: Sequence[int])->np.ndarray[bool]:
     """
     A function that creates a boolean mask containing the locus of all array positions that are eqidistant to a

@@ -169,29 +169,6 @@ def crop_around_seed(image_:np.ndarray, seed_label_:int, seeds_pos_:dict[int, li
     return image_[z_min:z_max, y_min:y_max, x_min:x_max]
 
 
-def update_image(big_image, small_image, seeds_pos, label_):
-    big_mask = big_image < -1 # This is False everywhere
-
-    sp = seeds_pos[label_]
-    small_rad = int((small_image.shape[0]-1)/2)
-
-    z_min = max(sp[0]-small_rad, 0)
-    y_min = max(sp[1]-small_rad, 0)
-    x_min = max(sp[2]-small_rad, 0)
-
-    z_max = min(sp[0]+small_rad+1, big_image.shape[0])
-    y_max = min(sp[1]+small_rad+1, big_image.shape[1])
-    x_max = min(sp[2]+small_rad+1, big_image.shape[2])
-
-    small_mask = small_image == label_
-    big_mask[z_min: z_max, y_min:y_max, x_min:x_max]=small_mask
-
-    big_image[big_mask] = label_
-
-    return big_image
-
-
-
 # VISUALIZATIONS PART
 def paint_annotations(
     t_:int,
