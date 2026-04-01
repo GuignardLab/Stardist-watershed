@@ -155,7 +155,8 @@ def crop_around_seed(image_:np.ndarray, seed_label_:int, seeds_pos_:dict[int, li
         np.ndarray: cropped image around the seed.
 """
 
-    sp = seeds_pos_[seed_label_]
+    sp = [int(seep) for seep in seeds_pos_[seed_label_]]
+    # this avoids ocasional bugs returning interger sutraction overflow. Unknown cause.
 
     z_min = max(sp[0]-radius_, 0)
     y_min = max(sp[1]-radius_, 0)
